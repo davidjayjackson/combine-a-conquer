@@ -1,0 +1,94 @@
+---
+title: "Impute-w-mice"
+author: "David J Jackson"
+date: "1/31/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(data.table)
+library(mice)
+library(prophet)
+library(scales)
+```
+```{r Import Kanzel ISN Data}
+rm(list=ls())
+# Total days 27,639
+kanzel <- fread("./../db/kh_spots.csv")
+kanzel$Ymd <- as.Date(kanzel$Ymd)
+kanzel$Year <- year(kanzel$Ymd)
+kanzel$Month <- month(kanzel$Ymd)
+kanzel$s <- kanzel$s_n + kanzel$s_s
+kanzel$g <- kanzel$g_n + kanzel$g_s
+# kanzel$Cts <- ifelse(kanzel$R ==0,0,1)
+# kanzel$Yes <- ifelse(kanzel$R >=1,"Yes","No")
+kanzel<-kanzel[Ymd <="2019-12-31",.(Ymd,s,g,R)]
+```
+```{r Import SIDC ISN Data}
+sidc <- fread("../db/SN_d_tot_V2.0.csv")
+colnames(sidc) <- c("Year","Month","Day", "Fdate","R", "Sd","Obs" ,"Defin"  )
+sidc$Ymd <- as.Date(paste(sidc$Year, sidc$Month, sidc$Day, sep = "-"))
+sidc <- sidc %>% filter(Ymd <="2019-12-31") %>% select(Ymd,R)
+# df_s <- sidc %>% filter(Ymd >="2009-01-01" & Ymd <="2019-12-31")
+```
+
+# Combined Kanzel & Sidc data sets and calc Spots and Groups
+```{r Use sidc to fill in missing kanzel dates}
+s <- sidc %>% filter(!(Ymd %in% kanzel$Ymd))
+k <- kanzel
+kc <- rbind(k,s, fill=TRUE)
+kc$g <- ifelse(is.na(kc$g),kc$R %/% 10,kc$g)
+kc$s <-ifelse(is.na(kc$s),kc$R %% 10,kc$s)
+# scottcame @ r4ds community
+# kc %>% mutate(g=case_when(is.na(g) ~ R %/% 10, TRUE ~ g))
+# kc %>% mutate(s=case_when(is.na(s) ~ R %/% 10, TRUE ~ s))
+#
+kc$Cts <- ifelse(kc$R ==0,0,1)
+kc$Yes <- ifelse(kc$R >=1,"Yes","No")
+table(kc$Yes)
+```
+```{r Predict ISN}
+df.pred <- kc %>% select(Ymd,R)
+colnames(df.pred) <- c("ds","y")
+m <- prophet(seasonality.mode="multiplicative")
+m <- add_seasonality(m, name="cycle_11year", period=365.25 * 11,fourier.order=5)
+m <- fit.prophet(m, df.pred)
+future <- make_future_dataframe(m,periods=8000,freq="day")
+forecast <- predict(m, future)
+plot(m,forecast) +xlab("Year of Prediction") + ylab("Total Sunspots")
+```
+
+# Cycle 25 and Beyond : 2020 - 2030
+```{r}
+fcast <- forecast %>% select(ds,yhat,yhat_lower,yhat_upper) %>% filter(ds >="2020-01-01" )
+ggplot(data=fcast,aes(x=ds,y=yhat,col="Predicted")) +geom_line() +xlab("Year of Prediction") + ylab("Total Mean ISN") +geom_smooth(method="loess",aes(col="loess")) +
+ggtitle("Solar Cycle 25 and Beyond: 2020 - 2026")
+```
+```{r Comparing actual to predicted isn for Jan. 2020}
+fcast1 <- forecast %>% filter(ds >="2020-01-01")
+isn1 <- kd %>% filter(Ymd >="2010-01-01")
+ggplot(fcast1) + geom_line(x=ds,y=yaht,col="yhat") +
+  geom_line(isn1,aes(x=Ymd,y=R,col="R"))
+
+```
+
+
+# Summary of Days with amd with Out Spots by Year
+```{r stackeding days, echo=FALSE}
+kc$Year <- lubridate::year(kc$Ymd)
+df <- kc %>% filter(Ymd >="2009-01-01" & Ymd <="2019-12-31")
+df %>% group_by(Year,Yes) %>%  summarise(Days= n()) %>% spread(Year,Days)
+df %>% group_by(Year,Yes) %>%  summarise(Days= n()) %>%
+ggplot(aes(x=Year,y=Days,fill=Yes,scale="free_y")) + geom_bar(stat="identity") 
+  
+```
+```{r side-by-side days, echo=FALSE}
+kc$Year <- lubridate::year(kc$Ymd)
+df <- kc %>% filter(Ymd >="2009-01-01" & Ymd <="2019-12-31")
+df %>% group_by(Year,Yes) %>%  summarise(Days= n()) %>% spread(Year,Days)
+df %>% group_by(Year,Yes) %>%  summarise(Days= n()) %>%
+ggplot(aes(x=Year,y=Days,position="dodge")) + geom_bar(stat="identity")
+```
